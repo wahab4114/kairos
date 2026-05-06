@@ -38,7 +38,14 @@ src/
 
 ```bash
 npm install      # Already done ✓
-npm run dev      # Start development server (port 3000)
+npm run dev      # Start development server (port 3000, includes /api/market proxy)
+```
+
+Optional proxy override:
+
+```bash
+# If you run a separate market proxy service, point frontend to it
+VITE_MARKET_PROXY_URL=http://localhost:8787/api/market
 ```
 
 ### Build

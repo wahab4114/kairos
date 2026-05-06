@@ -2,6 +2,7 @@ import { getSupabaseClient } from '../lib/supabase'
 import type { Stock } from '../types'
 
 const DEMO_STOCKS_KEY = 'kairos-stocks'
+const DEMO_STOCK_SOURCES_KEY = 'kairos-stock-sources'
 
 interface StockRow {
   id: string
@@ -35,13 +36,47 @@ function writeLocalStocks(userId: string, stocks: Stock[]) {
   localStorage.setItem(getStorageKey(DEMO_STOCKS_KEY, userId), JSON.stringify(stocks))
 }
 
-function mapStockRow(row: StockRow): Stock {
+function readLocalStockSources(userId: string): Record<string, string> {
+  const raw = localStorage.getItem(getStorageKey(DEMO_STOCK_SOURCES_KEY, userId))
+  if (!raw) {
+    return {}
+  }
+
+  try {
+    return JSON.parse(raw) as Record<string, string>
+  } catch {
+    return {}
+  }
+}
+
+function writeLocalStockSources(userId: string, sources: Record<string, string>) {
+  localStorage.setItem(getStorageKey(DEMO_STOCK_SOURCES_KEY, userId), JSON.stringify(sources))
+}
+
+function persistLocalStockSource(userId: string, stockId: string, priceSource?: string) {
+  const current = readLocalStockSources(userId)
+
+  if (!priceSource) {
+    if (!(stockId in current)) {
+      return
+    }
+    delete current[stockId]
+    writeLocalStockSources(userId, current)
+    return
+  }
+
+  current[stockId] = priceSource
+  writeLocalStockSources(userId, current)
+}
+
+function mapStockRow(row: StockRow, priceSource?: string): Stock {
   return {
     id: row.id,
     symbol: row.symbol,
     name: row.name,
     currentPrice: Number(row.current_price),
     currency: row.currency,
+    priceSource,
     brokeragePlatform: row.brokerage_platform ?? undefined,
     addedDate: row.added_at,
   }
@@ -64,7 +99,8 @@ export async function listStocks(userId: string) {
     throw error
   }
 
-  return (data as StockRow[]).map(mapStockRow)
+  const stockSources = readLocalStockSources(userId)
+  return (data as StockRow[]).map((row) => mapStockRow(row, stockSources[row.id]))
 }
 
 export async function createStock(userId: string, stock: Omit<Stock, 'id' | 'addedDate'>) {
@@ -99,7 +135,9 @@ export async function createStock(userId: string, stock: Omit<Stock, 'id' | 'add
     throw error
   }
 
-  return mapStockRow(data as StockRow)
+  const createdStock = mapStockRow(data as StockRow, stock.priceSource)
+  persistLocalStockSource(userId, createdStock.id, stock.priceSource)
+  return createdStock
 }
 
 export async function deleteStock(userId: string, stockId: string) {
@@ -122,14 +160,15 @@ export async function deleteStock(userId: string, stockId: string) {
   }
 }
 
-export async function updateStockPrice(userId: string, stockId: string, price: number) {
+export async function updateStockPrice(userId: string, stockId: string, price: number, priceSource?: string) {
   const supabase = getSupabaseClient()
 
   if (!supabase) {
     const next = readLocalStocks(userId).map((stock) =>
-      stock.id === stockId ? { ...stock, currentPrice: price } : stock,
+      stock.id === stockId ? { ...stock, currentPrice: price, priceSource: priceSource ?? stock.priceSource } : stock,
     )
     writeLocalStocks(userId, next)
+    persistLocalStockSource(userId, stockId, priceSource)
     return
   }
 
@@ -142,4 +181,6 @@ export async function updateStockPrice(userId: string, stockId: string, price: n
   if (error) {
     throw error
   }
+
+  persistLocalStockSource(userId, stockId, priceSource)
 }

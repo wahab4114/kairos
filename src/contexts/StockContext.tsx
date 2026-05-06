@@ -71,14 +71,16 @@ export function StockProvider({ children }: { children: React.ReactNode }) {
     setStocks((current) =>
       current.map((stock) => {
         const quote = quotes.get(stock.symbol)
-        return quote ? { ...stock, currentPrice: quote.price } : stock
+        return quote
+          ? { ...stock, currentPrice: quote.price, priceSource: quote.provider ?? stock.priceSource }
+          : stock
       }),
     )
 
     for (const stock of currentStocks) {
       const quote = quotes.get(stock.symbol)
       if (!quote) continue
-      void persistStockPrice(user.id, stock.id, quote.price)
+      void persistStockPrice(user.id, stock.id, quote.price, quote.provider)
     }
 
     setLastPriceSyncAt(new Date().toISOString())

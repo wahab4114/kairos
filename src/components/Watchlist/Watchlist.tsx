@@ -2,7 +2,12 @@ import { useEffect, useRef, useState } from 'react'
 import { Plus, X, TrendingUp, BadgeEuro, WalletCards, RefreshCw } from 'lucide-react'
 import { useStock } from '../../contexts/StockContext'
 import { Stock } from '../../types'
-import { fetchSymbolSnapshot, isPriceServiceConfigured, searchSymbols } from '../../services/priceService'
+import {
+  consumeSymbolLookupNotice,
+  fetchSymbolSnapshot,
+  isPriceServiceConfigured,
+  searchSymbols,
+} from '../../services/priceService'
 
 export function Watchlist() {
   const { stocks, addStock, removeStock, lastPriceSyncAt, refreshLivePrices, livePricesEnabled } = useStock()
@@ -130,9 +135,29 @@ export function Watchlist() {
     setIsAdding(true)
 
     try {
-      const snapshot = await fetchSymbolSnapshot(symbol)
+      let snapshot = await fetchSymbolSnapshot(symbol)
+
+      // If direct resolve fails, retry using provider search candidates.
       if (!snapshot) {
-        setAddError('Unable to resolve symbol. Check the ticker format and try again.')
+        const candidates = await searchSymbols(symbol, 8)
+        const preferred = [
+          ...candidates.filter((c) => c.symbol.toUpperCase() === symbol),
+          ...candidates,
+        ]
+
+        const tried = new Set<string>()
+        for (const candidate of preferred) {
+          const candidateSymbol = candidate.symbol.toUpperCase()
+          if (!candidateSymbol || tried.has(candidateSymbol)) continue
+          tried.add(candidateSymbol)
+          snapshot = await fetchSymbolSnapshot(candidateSymbol)
+          if (snapshot) break
+        }
+      }
+
+      if (!snapshot) {
+        const providerNotice = consumeSymbolLookupNotice()
+        setAddError(providerNotice ?? 'Unable to resolve symbol. Check the ticker format and try again.')
         return
       }
 
@@ -274,7 +299,7 @@ export function Watchlist() {
             </p>
             {!livePricesConfigured && (
               <p style={{ margin: '0 0 0.75rem', fontSize: '0.8rem', color: '#f59e0b' }}>
-                Live price API key missing. Add VITE_FINNHUB_API_KEY in .env to enable symbol lookup.
+                No live price provider is currently available. Add VITE_FINNHUB_API_KEY or VITE_TWELVEDATA_API_KEY to improve symbol lookup coverage.
               </p>
             )}
             {addError && (
@@ -338,8 +363,9 @@ function StockCard({
   return (
     <div className="glass-card" style={{ border: `1px solid ${borderColor}` }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '1rem' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', minWidth: 0, flex: 1 }}>
           <div style={{
+            flexShrink: 0,
             width: 44,
             height: 44,
             background: `linear-gradient(135deg, ${borderColor}, rgba(255,255,255,0.05))`,
@@ -351,9 +377,9 @@ function StockCard({
           }}>
             <TrendingUp size={18} color="white" strokeWidth={2.2} />
           </div>
-          <div>
+          <div style={{ minWidth: 0, flex: 1 }}>
             <p style={{ margin: 0, fontWeight: 800, fontSize: '1rem' }} className="text-white-main">{stock.symbol}</p>
-            <p style={{ margin: 0, fontSize: '0.75rem', maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} className="text-muted-main">
+            <p style={{ margin: 0, fontSize: '0.75rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} className="text-muted-main">
               {stock.name}
             </p>
           </div>
@@ -361,7 +387,7 @@ function StockCard({
         <button
           onClick={() => onRemove(stock.id)}
           className="btn-danger"
-          style={{ padding: '0.3rem 0.6rem', fontSize: '0.7rem' }}
+          style={{ padding: '0.3rem 0.6rem', fontSize: '0.7rem', flexShrink: 0, alignSelf: 'flex-start', marginLeft: '0.75rem' }}
         >
           <X size={12} /> Remove
         </button>
