@@ -89,10 +89,16 @@ export function StockProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (!livePricesEnabled || !user) return
 
-    void refreshLivePrices()
     const interval = setInterval(() => void refreshLivePrices(), PRICE_REFRESH_MS)
     return () => clearInterval(interval)
   }, [user, livePricesEnabled])
+
+  useEffect(() => {
+    if (!livePricesEnabled || !user) return
+    if (stocks.length === 0) return
+
+    void refreshLivePrices()
+  }, [user, livePricesEnabled, stocks.length])
 
   useEffect(() => {
     void refresh()

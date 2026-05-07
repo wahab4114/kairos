@@ -1,9 +1,7 @@
 const FINNHUB_API_KEY = import.meta.env.VITE_FINNHUB_API_KEY as string | undefined
-const TWELVE_DATA_API_KEY = import.meta.env.VITE_TWELVEDATA_API_KEY as string | undefined
 const MARKET_PROXY_URL = (import.meta.env.VITE_MARKET_PROXY_URL as string | undefined)?.trim()
 const YAHOO_FALLBACK_ENABLED = true
 const BASE_URL = 'https://finnhub.io/api/v1'
-const TWELVE_BASE_URL = 'https://api.twelvedata.com'
 const YAHOO_BASE_URL = 'https://query1.finance.yahoo.com'
 const YAHOO_SEARCH_BASE_URL = 'https://query2.finance.yahoo.com'
 let pendingNewsNotice: string | null = null
@@ -42,10 +40,10 @@ function isMarketOpen(): boolean {
 }
 
 export function isPriceServiceConfigured(): boolean {
-  return Boolean(FINNHUB_API_KEY || TWELVE_DATA_API_KEY || YAHOO_FALLBACK_ENABLED)
+  return Boolean(FINNHUB_API_KEY || YAHOO_FALLBACK_ENABLED)
 }
 
-export type SymbolProvider = 'finnhub' | 'twelvedata' | 'yahoo' | 'stooq'
+export type SymbolProvider = 'finnhub' | 'yahoo' | 'stooq'
 
 export interface QuoteResult {
   symbol: string
@@ -60,7 +58,8 @@ export interface SymbolSnapshot {
   name: string
   currency: string
   price: number
-  provider?: SymbolProvider
+  priceProvider?: SymbolProvider
+  profileProvider?: SymbolProvider
 }
 
 export interface SymbolLookupResult {
@@ -68,27 +67,6 @@ export interface SymbolLookupResult {
   description: string
   type?: string
   provider?: SymbolProvider
-}
-
-function parseNumber(value: unknown): number | null {
-  if (typeof value === 'number' && Number.isFinite(value)) return value
-  if (typeof value === 'string') {
-    const n = Number(value.replace('%', ''))
-    if (Number.isFinite(n)) return n
-  }
-  return null
-}
-
-function getTwelveDataSymbolCandidates(symbol: string): string[] {
-  const normalized = symbol.trim().toUpperCase()
-  if (!normalized) return []
-
-  const candidates: string[] = [normalized]
-  if (normalized.includes('.')) {
-    const base = normalized.split('.')[0]
-    if (base) candidates.push(base)
-  }
-  return Array.from(new Set(candidates))
 }
 
 function getYahooSymbolCandidates(symbol: string): string[] {
@@ -209,146 +187,6 @@ async function searchSymbolsFromProxy(query: string, limit: number): Promise<Sym
   }
 }
 
-async function fetchTwelveDataQuote(symbol: string): Promise<QuoteResult | null> {
-  if (!TWELVE_DATA_API_KEY) return null
-
-  const candidates = getTwelveDataSymbolCandidates(symbol)
-  for (const candidate of candidates) {
-    const url = `${TWELVE_BASE_URL}/quote?symbol=${encodeURIComponent(candidate)}&apikey=${TWELVE_DATA_API_KEY}`
-    try {
-      const res = await fetch(url, FRESH_FETCH_OPTIONS)
-      if (!res.ok) continue
-      const data = (await res.json()) as {
-        close?: string
-        previous_close?: string
-        change?: string
-        percent_change?: string
-        code?: number
-        status?: string
-        message?: string
-      }
-
-      if (data.code || data.status === 'error') {
-        const providerMessage = parseProviderErrorMessage(data)
-        if (providerMessage) setSymbolLookupNotice(providerMessage)
-        continue
-      }
-
-      const price = parseNumber(data.close)
-      if (!price || price <= 0) continue
-
-      const previousClose = parseNumber(data.previous_close) ?? price
-      const derivedChange = price - previousClose
-      const derivedChangePercent = previousClose > 0 ? (derivedChange / previousClose) * 100 : 0
-
-      return {
-        symbol,
-        price,
-        change: parseNumber(data.change) ?? derivedChange,
-        changePercent: parseNumber(data.percent_change) ?? derivedChangePercent,
-        provider: 'twelvedata',
-      }
-    } catch {
-      // try next candidate
-    }
-  }
-
-  return null
-}
-
-async function fetchTwelveDataSnapshot(symbol: string): Promise<SymbolSnapshot | null> {
-  if (!TWELVE_DATA_API_KEY) return null
-
-  const candidates = getTwelveDataSymbolCandidates(symbol)
-  for (const candidate of candidates) {
-    const url = `${TWELVE_BASE_URL}/quote?symbol=${encodeURIComponent(candidate)}&apikey=${TWELVE_DATA_API_KEY}`
-    try {
-      const res = await fetch(url, FRESH_FETCH_OPTIONS)
-      if (!res.ok) continue
-      const data = (await res.json()) as {
-        symbol?: string
-        name?: string
-        currency?: string
-        close?: string
-        code?: number
-        status?: string
-        message?: string
-      }
-
-      if (data.code || data.status === 'error') {
-        const providerMessage = parseProviderErrorMessage(data)
-        if (providerMessage) setSymbolLookupNotice(providerMessage)
-        continue
-      }
-
-      const price = parseNumber(data.close)
-      if (!price || price <= 0) continue
-
-      return {
-        symbol: symbol.toUpperCase(),
-        name: data.name ?? symbol.toUpperCase(),
-        currency: data.currency ?? 'USD',
-        price,
-        provider: 'twelvedata',
-      }
-    } catch {
-      // try next candidate
-    }
-  }
-
-  return null
-}
-
-async function searchSymbolsFromTwelveData(query: string, limit: number): Promise<SymbolLookupResult[]> {
-  if (!TWELVE_DATA_API_KEY) return []
-
-  const queries = [query.trim()]
-  const normalized = query.trim().toUpperCase()
-  if (normalized.includes('.')) {
-    const base = normalized.split('.')[0]
-    if (base && !queries.includes(base)) queries.push(base)
-  }
-
-  const merged: SymbolLookupResult[] = []
-  const seen = new Set<string>()
-  for (const q of queries) {
-    const url = `${TWELVE_BASE_URL}/symbol_search?symbol=${encodeURIComponent(q)}&outputsize=${Math.max(limit, 8)}&apikey=${TWELVE_DATA_API_KEY}`
-    try {
-      const res = await fetch(url, FRESH_FETCH_OPTIONS)
-      if (!res.ok) continue
-      const data = (await res.json()) as {
-        data?: Array<{
-          symbol?: string
-          instrument_name?: string
-          type?: string
-        }>
-        status?: string
-        code?: number
-      }
-
-      if (data.code || data.status === 'error') continue
-
-      for (const item of data.data ?? []) {
-        if (!item.symbol) continue
-        const sym = item.symbol.toUpperCase()
-        if (seen.has(sym)) continue
-        seen.add(sym)
-        merged.push({
-          symbol: sym,
-          description: item.instrument_name ?? sym,
-          type: item.type,
-          provider: 'twelvedata',
-        })
-        if (merged.length >= limit) return merged
-      }
-    } catch {
-      // try next query
-    }
-  }
-
-  return merged
-}
-
 async function fetchYahooQuote(symbol: string): Promise<QuoteResult | null> {
   const proxyQuote = await fetchProxyQuote(symbol)
   if (proxyQuote) {
@@ -407,7 +245,8 @@ async function fetchYahooSnapshot(symbol: string): Promise<SymbolSnapshot | null
       name: proxySnapshot.name,
       currency: proxySnapshot.currency,
       price: proxySnapshot.price,
-      provider: proxySnapshot.provider,
+      priceProvider: proxySnapshot.provider,
+      profileProvider: proxySnapshot.provider,
     }
   }
 
@@ -440,7 +279,8 @@ async function fetchYahooSnapshot(symbol: string): Promise<SymbolSnapshot | null
         name: quote.longName ?? quote.shortName ?? symbol.toUpperCase(),
         currency: quote.currency ?? 'USD',
         price,
-        provider: 'yahoo',
+        priceProvider: 'yahoo',
+        profileProvider: 'yahoo',
       }
     } catch {
       // try next candidate
@@ -525,9 +365,6 @@ function parseProviderErrorMessage(payload: unknown): string | null {
 
   if (normalized.includes("you don't have access")) {
     return 'Your Finnhub plan does not include quote access for this symbol/exchange.'
-  }
-  if (normalized.includes('available starting with') || normalized.includes('consider upgrading')) {
-    return 'Your Twelve Data plan does not include quote access for this symbol.'
   }
   if (normalized.includes('run out of api credits') || normalized.includes('rate limit')) {
     return 'Quote provider rate limit reached. Please retry in about a minute.'
@@ -666,11 +503,9 @@ export async function fetchClosingPrices(symbol: string, days = 90): Promise<num
  * Returns null if unconfigured or the symbol is not found.
  */
 export async function fetchQuote(symbol: string): Promise<QuoteResult | null> {
-  if (!FINNHUB_API_KEY && !TWELVE_DATA_API_KEY && !YAHOO_FALLBACK_ENABLED) return null
+  if (!FINNHUB_API_KEY && !YAHOO_FALLBACK_ENABLED) return null
 
   if (!FINNHUB_API_KEY) {
-    const twelve = await fetchTwelveDataQuote(symbol)
-    if (twelve) return twelve
     return fetchYahooQuote(symbol)
   }
 
@@ -699,8 +534,6 @@ export async function fetchQuote(symbol: string): Promise<QuoteResult | null> {
   }
 
   if (!price) {
-    const twelve = await fetchTwelveDataQuote(symbol)
-    if (twelve) return twelve
     return fetchYahooQuote(symbol)
   }
 
@@ -723,7 +556,7 @@ export async function fetchQuote(symbol: string): Promise<QuoteResult | null> {
  */
 export async function fetchQuotes(symbols: string[]): Promise<Map<string, QuoteResult>> {
   if (symbols.length === 0) return new Map()
-  if (!FINNHUB_API_KEY && !TWELVE_DATA_API_KEY && !YAHOO_FALLBACK_ENABLED) return new Map()
+  if (!FINNHUB_API_KEY && !YAHOO_FALLBACK_ENABLED) return new Map()
 
   const results = await Promise.allSettled(symbols.map(fetchQuote))
   const map = new Map<string, QuoteResult>()
@@ -744,14 +577,12 @@ export async function fetchQuotes(symbols: string[]): Promise<Map<string, QuoteR
 export async function fetchSymbolSnapshot(rawSymbol: string): Promise<SymbolSnapshot | null> {
   pendingSymbolLookupNotice = null
 
-  if (!FINNHUB_API_KEY && !TWELVE_DATA_API_KEY && !YAHOO_FALLBACK_ENABLED) return null
+  if (!FINNHUB_API_KEY && !YAHOO_FALLBACK_ENABLED) return null
 
   const symbol = rawSymbol.trim().toUpperCase()
   if (!symbol) return null
 
   if (!FINNHUB_API_KEY) {
-    const twelve = await fetchTwelveDataSnapshot(symbol)
-    if (twelve) return twelve
     return fetchYahooSnapshot(symbol)
   }
 
@@ -786,13 +617,12 @@ export async function fetchSymbolSnapshot(rawSymbol: string): Promise<SymbolSnap
   }
 
   if (!resolvedPrice) {
-    const twelve = await fetchTwelveDataSnapshot(symbol)
-    if (twelve) return twelve
     return fetchYahooSnapshot(symbol)
   }
 
   let name = symbol
   let currency = 'USD'
+  let profileProvider: SymbolProvider = 'finnhub'
 
   if (profileRes.status === 'fulfilled' && profileRes.value.ok) {
     const profileData = (await profileRes.value.json()) as {
@@ -803,12 +633,26 @@ export async function fetchSymbolSnapshot(rawSymbol: string): Promise<SymbolSnap
     if (profileData.currency) currency = profileData.currency
   }
 
+  if (name === symbol || !currency) {
+    const yahooSnapshot = await fetchYahooSnapshot(symbol)
+    if (yahooSnapshot) {
+      if (name === symbol && yahooSnapshot.name) {
+        name = yahooSnapshot.name
+      }
+      if ((!currency || currency === 'USD') && yahooSnapshot.currency) {
+        currency = yahooSnapshot.currency
+      }
+      profileProvider = yahooSnapshot.profileProvider ?? yahooSnapshot.priceProvider ?? 'yahoo'
+    }
+  }
+
   return {
     symbol,
     name,
     currency,
     price: resolvedPrice,
-    provider: 'finnhub',
+    priceProvider: 'finnhub',
+    profileProvider,
   }
 }
 
@@ -816,14 +660,12 @@ export async function fetchSymbolSnapshot(rawSymbol: string): Promise<SymbolSnap
  * Search tradable symbols by free-text query.
  */
 export async function searchSymbols(query: string, limit = 8): Promise<SymbolLookupResult[]> {
-  if (!FINNHUB_API_KEY && !TWELVE_DATA_API_KEY && !YAHOO_FALLBACK_ENABLED) return []
+  if (!FINNHUB_API_KEY && !YAHOO_FALLBACK_ENABLED) return []
 
   const trimmed = query.trim()
   if (!trimmed) return []
 
   if (!FINNHUB_API_KEY) {
-    const twelve = await searchSymbolsFromTwelveData(trimmed, limit)
-    if (twelve.length > 0) return twelve
     return searchSymbolsFromYahoo(trimmed, limit)
   }
 
@@ -857,8 +699,6 @@ export async function searchSymbols(query: string, limit = 8): Promise<SymbolLoo
   if (finnhubResults.length > 0) return finnhubResults
 
   // Global fallback when Finnhub search doesn't return the exchange symbol.
-  const twelveResults = await searchSymbolsFromTwelveData(trimmed, limit)
-  if (twelveResults.length > 0) return twelveResults
   return searchSymbolsFromYahoo(trimmed, limit)
 }
 

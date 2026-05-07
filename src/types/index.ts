@@ -5,6 +5,7 @@ export interface Stock {
   currentPrice: number
   currency: string
   priceSource?: string
+  profileSource?: string
   brokeragePlatform?: string // e.g., "scalable-capital", "trade-republic"
   addedDate: string
 }

@@ -166,6 +166,8 @@ export function Watchlist() {
         name: snapshot.name,
         currentPrice: snapshot.price,
         currency: snapshot.currency,
+          priceSource: snapshot.priceProvider,
+          profileSource: snapshot.profileProvider,
         brokeragePlatform: formData.brokeragePlatform,
       })
 
@@ -299,7 +301,7 @@ export function Watchlist() {
             </p>
             {!livePricesConfigured && (
               <p style={{ margin: '0 0 0.75rem', fontSize: '0.8rem', color: '#f59e0b' }}>
-                No live price provider is currently available. Add VITE_FINNHUB_API_KEY or VITE_TWELVEDATA_API_KEY to improve symbol lookup coverage.
+                 No live price provider is currently available. Add VITE_FINNHUB_API_KEY to improve symbol lookup coverage.
               </p>
             )}
             {addError && (
@@ -342,6 +344,20 @@ export function Watchlist() {
       )}
     </div>
   )
+}
+
+function formatSourceLabel(source?: string) {
+  const labels: Record<string, string> = {
+    finnhub: 'Finnhub',
+    yahoo: 'Yahoo',
+    stooq: 'Stooq',
+  }
+
+  return labels[source ?? ''] ?? 'Unknown'
+}
+
+function getDisplayProfileSource(stock: Stock) {
+  return stock.profileSource ?? stock.priceSource
 }
 
 function StockCard({
@@ -407,8 +423,13 @@ function StockCard({
           }}
         >
           <span>{stock.currentPrice.toFixed(2)}</span>
-          <span style={{ fontSize: '0.72rem' }} className="text-muted-main">Live</span>
+          <span style={{ fontSize: '0.72rem' }} className="text-muted-main">
+            {stock.priceSource ? `Price: ${formatSourceLabel(stock.priceSource)}` : 'Live'}
+          </span>
         </div>
+        <p style={{ margin: '0.4rem 0 0', fontSize: '0.72rem' }} className="text-muted-main">
+          Profile: {formatSourceLabel(getDisplayProfileSource(stock))}
+        </p>
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem', marginBottom: '0.875rem' }}>
