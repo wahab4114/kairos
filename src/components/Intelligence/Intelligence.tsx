@@ -100,6 +100,18 @@ function SignalBar({ label, score, detail, icon }: {
   )
 }
 
+function formatProviderLabel(provider: string): string {
+  switch (provider) {
+    case 'finnhub': return 'Finnhub'
+    case 'yahoo': return 'Yahoo'
+    case 'stooq': return 'Stooq'
+    case 'yfinance': return 'yfinance'
+    case 'lexicon': return 'Lexicon'
+    case 'hybrid': return 'Hybrid'
+    default: return 'None'
+  }
+}
+
 export function Intelligence() {
   const { stocks } = useStock()
   const [isLoading, setIsLoading] = useState(false)
@@ -377,6 +389,7 @@ export function Intelligence() {
         const newsItems = newsBySymbol[stock.symbol] ?? []
         const hasLoadedNews = newsLoadedBySymbol[stock.symbol] === true
         const signals   = guidance?.signals
+        const diagnostics = guidance?.diagnostics
 
         return (
           <div key={stock.id} className="glass-card" style={{ border: '1px solid rgba(99,102,241,0.24)' }}>
@@ -438,6 +451,36 @@ export function Intelligence() {
                   detail={signals.fundamentals.detail}
                   icon={<BarChart2 size={12} />}
                 />
+
+                {diagnostics && (
+                  <div style={{
+                    display: 'flex',
+                    flexWrap: 'wrap',
+                    gap: '0.4rem',
+                    paddingTop: '0.15rem',
+                  }}>
+                    {[
+                      ['Quote', diagnostics.quote],
+                      ['History', diagnostics.history],
+                      ['Sentiment', diagnostics.sentiment],
+                      ['Fundamentals', diagnostics.fundamentals],
+                    ].map(([label, provider]) => (
+                      <span
+                        key={`${label}-${provider}`}
+                        style={{
+                          fontSize: '0.68rem',
+                          borderRadius: 999,
+                          padding: '0.22rem 0.45rem',
+                          border: '1px solid rgba(255,255,255,0.09)',
+                          background: 'rgba(255,255,255,0.04)',
+                          color: 'rgba(255,255,255,0.72)',
+                        }}
+                      >
+                        {label}: {formatProviderLabel(String(provider))}
+                      </span>
+                    ))}
+                  </div>
+                )}
               </div>
             )}
 

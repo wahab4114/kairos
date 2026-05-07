@@ -16,9 +16,10 @@ import {
   fetchQuote,
   fetchCompanyNews,
   fetchNewsSentiment,
-  fetchBasicMetrics,
-  fetchClosingPrices,
+  fetchBasicMetricsWithProvider,
+  fetchClosingPricesWithProvider,
   type BasicMetrics,
+  type AnalyticsProvider,
   type StockGuidance,
   type SignalDetail,
   type SignalBreakdown,
@@ -580,14 +581,17 @@ export async function getEnrichedGuidance(
   const profileConfig = PROFILE_CONFIG[profile]
 
   // Fetch everything in parallel — individual failures return null/empty gracefully
-  const [quote, closes, metrics, sentimentSignal] = await Promise.all([
+  const [quote, closesResult, metricsResult, sentimentSignal] = await Promise.all([
     fetchQuote(sym),
-    fetchClosingPrices(sym, 90),
-    fetchBasicMetrics(sym),
+    fetchClosingPricesWithProvider(sym, 90),
+    fetchBasicMetricsWithProvider(sym),
     computeSentimentSignal(sym, profile, companyName),
   ])
 
   if (!quote) return null
+
+  const closes = closesResult.closes
+  const metrics = metricsResult.metrics
 
   const momentumSignal     = computeMomentumSignal(closes, quote.changePercent)
   const fundamentalsSignal = computeFundamentalsSignal(metrics, quote.price)
@@ -618,6 +622,17 @@ export async function getEnrichedGuidance(
   const confidence = clamp(allSame ? baseConf + 8 : baseConf, 42, 94)
 
   const reasons = generateReasons(action, signals, metrics)
+  const diagnostics: {
+    quote: AnalyticsProvider
+    history: AnalyticsProvider
+    sentiment: AnalyticsProvider
+    fundamentals: AnalyticsProvider
+  } = {
+    quote: quote.provider ?? 'none',
+    history: closesResult.provider,
+    sentiment: sentimentSignal.source,
+    fundamentals: metricsResult.provider,
+  }
 
   return {
     symbol: sym,
@@ -627,5 +642,6 @@ export async function getEnrichedGuidance(
     price: quote.price,
     changePercent: quote.changePercent,
     signals,
+    diagnostics,
   }
 }

@@ -44,6 +44,7 @@ export function isPriceServiceConfigured(): boolean {
 }
 
 export type SymbolProvider = 'finnhub' | 'yahoo' | 'stooq'
+export type AnalyticsProvider = SymbolProvider | 'yfinance' | 'lexicon' | 'hybrid' | 'none'
 
 export interface QuoteResult {
   symbol: string
@@ -90,10 +91,98 @@ function getMarketProxyBaseUrl(): string {
   return '/api/market'
 }
 
-function getMarketProxyUrl(path: 'quote' | 'snapshot' | 'search', params: Record<string, string>): string {
+function getMarketProxyUrl(path: 'quote' | 'snapshot' | 'search' | 'news' | 'history' | 'fundamentals', params: Record<string, string>): string {
   const base = getMarketProxyBaseUrl()
   const query = new URLSearchParams(params)
   return `${base}/${path}?${query.toString()}`
+}
+
+async function fetchProxyNews(
+  symbol: string,
+  limit: number,
+  companyName?: string,
+  strictRelevance = false,
+): Promise<CompanyNewsItem[]> {
+  const url = getMarketProxyUrl('news', {
+    symbol,
+    limit: String(Math.max(limit, 1)),
+  })
+
+  try {
+    const res = await fetch(url, FRESH_FETCH_OPTIONS)
+    if (!res.ok) return []
+
+    const data = (await res.json()) as {
+      items?: Array<{
+        id?: number
+        headline?: string
+        source?: string
+        url?: string
+        summary?: string
+        datetime?: number
+      }>
+    }
+
+    const mapped = (data.items ?? []).map((item, index) => ({
+      id: typeof item.id === 'number' ? item.id : index + 1,
+      headline: item.headline ?? '',
+      source: item.source ?? 'Yahoo Finance',
+      url: item.url ?? '',
+      summary: item.summary ?? '',
+      datetime: item.datetime ?? Math.floor(Date.now() / 1000),
+    }))
+
+    return selectRelevantNewsItems(mapped, symbol, companyName, limit, strictRelevance)
+  } catch {
+    return []
+  }
+}
+
+async function fetchProxyClosingPricesWithProvider(symbol: string, days: number): Promise<{ closes: number[]; provider: AnalyticsProvider }> {
+  const url = getMarketProxyUrl('history', {
+    symbol,
+    days: String(Math.max(days, 5)),
+  })
+
+  try {
+    const res = await fetch(url, FRESH_FETCH_OPTIONS)
+    if (!res.ok) return { closes: [], provider: 'none' }
+    const data = (await res.json()) as { closes?: number[]; provider?: AnalyticsProvider }
+    return {
+      closes: Array.isArray(data.closes)
+        ? data.closes.filter((value) => Number.isFinite(value) && value > 0)
+        : [],
+      provider: data.provider ?? 'yfinance',
+    }
+  } catch {
+    return { closes: [], provider: 'none' }
+  }
+}
+
+async function fetchProxyClosingPrices(symbol: string, days: number): Promise<number[]> {
+  const result = await fetchProxyClosingPricesWithProvider(symbol, days)
+  return result.closes
+}
+
+async function fetchProxyBasicMetricsWithProvider(symbol: string): Promise<{ metrics: BasicMetrics | null; provider: AnalyticsProvider }> {
+  const url = getMarketProxyUrl('fundamentals', { symbol })
+
+  try {
+    const res = await fetch(url, FRESH_FETCH_OPTIONS)
+    if (!res.ok) return { metrics: null, provider: 'none' }
+    const data = (await res.json()) as { metrics?: BasicMetrics | null; provider?: AnalyticsProvider }
+    return {
+      metrics: data.metrics ?? null,
+      provider: data.provider ?? 'yfinance',
+    }
+  } catch {
+    return { metrics: null, provider: 'none' }
+  }
+}
+
+async function fetchProxyBasicMetrics(symbol: string): Promise<BasicMetrics | null> {
+  const result = await fetchProxyBasicMetricsWithProvider(symbol)
+  return result.metrics
 }
 
 async function fetchProxyQuote(symbol: string): Promise<(QuoteResult & { provider: SymbolProvider }) | null> {
@@ -402,6 +491,14 @@ export interface StockGuidance {
   price: number
   changePercent: number
   signals?: SignalBreakdown   // enriched — present when recommendation engine runs
+  diagnostics?: GuidanceDiagnostics
+}
+
+export interface GuidanceDiagnostics {
+  quote: AnalyticsProvider
+  history: AnalyticsProvider
+  sentiment: AnalyticsProvider
+  fundamentals: AnalyticsProvider
 }
 
 export interface NewsSentiment {
@@ -448,12 +545,14 @@ export async function fetchNewsSentiment(symbol: string): Promise<NewsSentiment 
  * Fetch basic fundamental metrics via Finnhub /stock/metric.
  */
 export async function fetchBasicMetrics(symbol: string): Promise<BasicMetrics | null> {
-  if (!FINNHUB_API_KEY) return null
+  if (!FINNHUB_API_KEY) {
+    return fetchProxyBasicMetrics(symbol)
+  }
 
   const url = `${BASE_URL}/stock/metric?symbol=${encodeURIComponent(symbol)}&metric=all&token=${FINNHUB_API_KEY}`
   try {
     const res = await fetch(url, FRESH_FETCH_OPTIONS)
-    if (!res.ok) return null
+    if (!res.ok) return fetchProxyBasicMetrics(symbol)
     const data = (await res.json()) as {
       metric?: {
         peNormalizedAnnual?: number
@@ -463,7 +562,7 @@ export async function fetchBasicMetrics(symbol: string): Promise<BasicMetrics | 
         revenueGrowthTTMYoy?: number
       }
     }
-    if (!data.metric) return null
+    if (!data.metric) return fetchProxyBasicMetrics(symbol)
     return {
       peRatio: data.metric.peNormalizedAnnual ?? null,
       beta: data.metric.beta ?? null,
@@ -472,7 +571,41 @@ export async function fetchBasicMetrics(symbol: string): Promise<BasicMetrics | 
       revenueGrowthYOY: data.metric.revenueGrowthTTMYoy ?? null,
     }
   } catch {
-    return null
+    return fetchProxyBasicMetrics(symbol)
+  }
+}
+
+export async function fetchBasicMetricsWithProvider(symbol: string): Promise<{ metrics: BasicMetrics | null; provider: AnalyticsProvider }> {
+  if (!FINNHUB_API_KEY) {
+    return fetchProxyBasicMetricsWithProvider(symbol)
+  }
+
+  const url = `${BASE_URL}/stock/metric?symbol=${encodeURIComponent(symbol)}&metric=all&token=${FINNHUB_API_KEY}`
+  try {
+    const res = await fetch(url, FRESH_FETCH_OPTIONS)
+    if (!res.ok) return fetchProxyBasicMetricsWithProvider(symbol)
+    const data = (await res.json()) as {
+      metric?: {
+        peNormalizedAnnual?: number
+        beta?: number
+        '52WeekHigh'?: number
+        '52WeekLow'?: number
+        revenueGrowthTTMYoy?: number
+      }
+    }
+    if (!data.metric) return fetchProxyBasicMetricsWithProvider(symbol)
+    return {
+      metrics: {
+        peRatio: data.metric.peNormalizedAnnual ?? null,
+        beta: data.metric.beta ?? null,
+        weekHigh52: data.metric['52WeekHigh'] ?? null,
+        weekLow52: data.metric['52WeekLow'] ?? null,
+        revenueGrowthYOY: data.metric.revenueGrowthTTMYoy ?? null,
+      },
+      provider: 'finnhub',
+    }
+  } catch {
+    return fetchProxyBasicMetricsWithProvider(symbol)
   }
 }
 
@@ -481,7 +614,9 @@ export async function fetchBasicMetrics(symbol: string): Promise<BasicMetrics | 
  * Returns closes oldest-first, or empty array on failure.
  */
 export async function fetchClosingPrices(symbol: string, days = 90): Promise<number[]> {
-  if (!FINNHUB_API_KEY) return []
+  if (!FINNHUB_API_KEY) {
+    return fetchProxyClosingPrices(symbol, days)
+  }
 
   const to = Math.floor(Date.now() / 1000)
   const from = to - days * 24 * 60 * 60
@@ -489,12 +624,35 @@ export async function fetchClosingPrices(symbol: string, days = 90): Promise<num
   const url = `${BASE_URL}/stock/candle?symbol=${encodeURIComponent(symbol)}&resolution=D&from=${from}&to=${to}&token=${FINNHUB_API_KEY}`
   try {
     const res = await fetch(url, FRESH_FETCH_OPTIONS)
-    if (!res.ok) return []
+    if (!res.ok) return fetchProxyClosingPrices(symbol, days)
     const data = (await res.json()) as { s: string; c?: number[] }
-    if (data.s !== 'ok' || !data.c || data.c.length === 0) return []
+    if (data.s !== 'ok' || !data.c || data.c.length === 0) return fetchProxyClosingPrices(symbol, days)
     return data.c
   } catch {
-    return []
+    return fetchProxyClosingPrices(symbol, days)
+  }
+}
+
+export async function fetchClosingPricesWithProvider(symbol: string, days = 90): Promise<{ closes: number[]; provider: AnalyticsProvider }> {
+  if (!FINNHUB_API_KEY) {
+    return fetchProxyClosingPricesWithProvider(symbol, days)
+  }
+
+  const to = Math.floor(Date.now() / 1000)
+  const from = to - days * 24 * 60 * 60
+
+  const url = `${BASE_URL}/stock/candle?symbol=${encodeURIComponent(symbol)}&resolution=D&from=${from}&to=${to}&token=${FINNHUB_API_KEY}`
+  try {
+    const res = await fetch(url, FRESH_FETCH_OPTIONS)
+    if (!res.ok) return fetchProxyClosingPricesWithProvider(symbol, days)
+    const data = (await res.json()) as { s: string; c?: number[] }
+    if (data.s !== 'ok' || !data.c || data.c.length === 0) return fetchProxyClosingPricesWithProvider(symbol, days)
+    return {
+      closes: data.c,
+      provider: 'finnhub',
+    }
+  } catch {
+    return fetchProxyClosingPricesWithProvider(symbol, days)
   }
 }
 
@@ -514,10 +672,10 @@ export async function fetchQuote(symbol: string): Promise<QuoteResult | null> {
   try {
     res = await fetch(url, FRESH_FETCH_OPTIONS)
   } catch {
-    return null
+    return fetchYahooQuote(symbol)
   }
 
-  if (!res.ok) return null
+  if (!res.ok) return fetchYahooQuote(symbol)
 
   const data = (await res.json()) as { c?: number; d?: number; dp?: number; pc?: number }
 
@@ -810,12 +968,12 @@ export async function fetchCompanyNews(
   companyName?: string,
   strictRelevance = false,
 ): Promise<CompanyNewsItem[]> {
-  if (!FINNHUB_API_KEY) return []
-
   const trimmed = symbol.trim().toUpperCase()
   if (!trimmed) return []
 
-  const fetchWindow = async (days: number): Promise<CompanyNewsItem[]> => {
+  const fetchFromFinnhubWindow = async (days: number): Promise<CompanyNewsItem[]> => {
+    if (!FINNHUB_API_KEY) return []
+
     const to = new Date()
     const from = new Date()
     from.setDate(to.getDate() - days)
@@ -850,11 +1008,16 @@ export async function fetchCompanyNews(
     return selectRelevantNewsItems(data, trimmed, companyName, limit, strictRelevance)
   }
 
-  let mapped = await fetchWindow(lookbackDays)
+  let mapped = await fetchFromFinnhubWindow(lookbackDays)
 
   // First-load resilience: one retry with a wider window if initial call comes back empty.
   if (mapped.length === 0) {
-    mapped = await fetchWindow(Math.max(lookbackDays + 7, 10))
+    mapped = await fetchFromFinnhubWindow(Math.max(lookbackDays + 7, 10))
+  }
+
+  // Fallback for non-US and provider gaps: Yahoo news via proxy endpoint.
+  if (mapped.length === 0) {
+    mapped = await fetchProxyNews(trimmed, limit, companyName, strictRelevance)
   }
 
   if (mapped.length > 0) {
