@@ -1,12 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
-import { Activity, Brain, Newspaper, RefreshCw, TrendingDown, TrendingUp, Minus, BarChart2, MessageSquare, Rocket, Scale, ShieldCheck, Sparkles } from 'lucide-react'
+import { Activity, Brain, Newspaper, RefreshCw, TrendingDown, TrendingUp, Minus, BarChart2, MessageSquare } from 'lucide-react'
 import { useStock } from '../../contexts/StockContext'
 import { CompanyNewsItem, StockGuidance, consumeNewsFetchNotice, fetchCompanyNews } from '../../services/priceService'
-import { getEnrichedGuidance, reprofileGuidance, type RecommendationProfile } from '../../services/recommendationEngine'
+import { getEnrichedGuidance } from '../../services/recommendationEngine'
 
 const INTELLIGENCE_REFRESH_MS = 60_000
-const PROFILE_STORAGE_KEY = 'kairos-recommendation-profile'
 const NEWS_STORAGE_KEY = 'kairos-intelligence-news-cache'
+const GUIDANCE_STORAGE_KEY = 'kairos-intelligence-guidance-cache'
 
 function loadPersistedNews(): Record<string, CompanyNewsItem[]> {
   if (typeof window === 'undefined') return {}
@@ -27,25 +27,30 @@ function loadPersistedNews(): Record<string, CompanyNewsItem[]> {
   }
 }
 
-const PROFILE_OPTIONS: Array<{ value: RecommendationProfile; label: string }> = [
-  { value: 'default', label: 'Default (All-round)' },
-  { value: 'aggressive', label: 'Aggressive' },
-  { value: 'balanced', label: 'Balanced' },
-  { value: 'conservative', label: 'Conservative' },
-]
+function loadPersistedGuidance(): Record<string, StockGuidance> {
+  if (typeof window === 'undefined') return {}
+  try {
+    const raw = window.localStorage.getItem(GUIDANCE_STORAGE_KEY)
+    if (!raw) return {}
+    const parsed = JSON.parse(raw) as Record<string, StockGuidance>
+    if (!parsed || typeof parsed !== 'object') return {}
 
-const PROFILE_EXPLANATIONS: Record<RecommendationProfile, string> = {
-  default: 'Best starting point. Blends aggressive, balanced, and conservative logic for all-round decisions.',
-  aggressive: 'Fast-reacting profile. Prioritizes momentum and very recent news; gives more buy/sell signals.',
-  balanced: 'Middle ground. Keeps short-term reactivity with medium-term stability.',
-  conservative: 'Risk-aware profile. Prioritizes fundamentals and longer-term context; fewer but stricter signals.',
-}
-
-const PROFILE_ICON: Record<RecommendationProfile, React.ReactNode> = {
-  default: <Sparkles size={12} />,
-  aggressive: <Rocket size={12} />,
-  balanced: <Scale size={12} />,
-  conservative: <ShieldCheck size={12} />,
+    const next: Record<string, StockGuidance> = {}
+    Object.entries(parsed).forEach(([symbol, guidance]) => {
+      if (
+        guidance &&
+        typeof guidance.symbol === 'string' &&
+        typeof guidance.action === 'string' &&
+        typeof guidance.confidence === 'number' &&
+        Array.isArray(guidance.reasons)
+      ) {
+        next[symbol] = guidance
+      }
+    })
+    return next
+  } catch {
+    return {}
+  }
 }
 
 // Score [-1,+1] → a colour that smoothly transitions red → amber → green
@@ -115,15 +120,7 @@ function formatProviderLabel(provider: string): string {
 export function Intelligence() {
   const { stocks } = useStock()
   const [isLoading, setIsLoading] = useState(false)
-  const [profile, setProfile] = useState<RecommendationProfile>(() => {
-    if (typeof window === 'undefined') return 'default'
-    const raw = window.localStorage.getItem(PROFILE_STORAGE_KEY)
-    if (raw === 'default' || raw === 'aggressive' || raw === 'balanced' || raw === 'conservative') {
-      return raw
-    }
-    return 'default'
-  })
-  const [guidanceBySymbol, setGuidanceBySymbol] = useState<Record<string, StockGuidance>>({})
+  const [guidanceBySymbol, setGuidanceBySymbol] = useState<Record<string, StockGuidance>>(() => loadPersistedGuidance())
   const [newsBySymbol, setNewsBySymbol] = useState<Record<string, CompanyNewsItem[]>>(() => loadPersistedNews())
   const [newsLoadedBySymbol, setNewsLoadedBySymbol] = useState<Record<string, boolean>>(() => {
     const persisted = loadPersistedNews()
@@ -136,7 +133,6 @@ export function Intelligence() {
   const [lastInsightsSyncAt, setLastInsightsSyncAt] = useState<string | null>(null)
   const [newsNotice, setNewsNotice] = useState<string | null>(null)
   const requestSeqRef = useRef(0)
-  const skipFirstProfileRefreshRef = useRef(true)
 
   const symbolsKey = stocks.map((s) => s.symbol).sort().join('|')
 
@@ -144,6 +140,13 @@ export function Intelligence() {
     const requestId = ++requestSeqRef.current
     if (stocks.length === 0) {
       setGuidanceBySymbol({})
+      if (typeof window !== 'undefined') {
+        try {
+          window.localStorage.removeItem(GUIDANCE_STORAGE_KEY)
+        } catch {
+          // ignore storage write failures
+        }
+      }
       if (refreshNews) {
         setNewsBySymbol({})
         setNewsLoadedBySymbol({})
@@ -154,7 +157,7 @@ export function Intelligence() {
     setIsLoading(true)
     try {
       const symbols = stocks.map((s) => s.symbol)
-      const guidancePromise = Promise.all(stocks.map((stock) => getEnrichedGuidance(stock.symbol, profile, stock.name)))
+      const guidancePromise = Promise.all(stocks.map((stock) => getEnrichedGuidance(stock.symbol, stock.name)))
       const newsPromise = refreshNews
         ? Promise.all(stocks.map((stock) => fetchCompanyNews(stock.symbol, 5, 4, stock.name)))
         : null
@@ -196,6 +199,13 @@ export function Intelligence() {
       guidanceResults.forEach((g, i) => { if (g) nextGuidance[symbols[i]] = g })
 
       setGuidanceBySymbol(nextGuidance)
+      if (typeof window !== 'undefined') {
+        try {
+          window.localStorage.setItem(GUIDANCE_STORAGE_KEY, JSON.stringify(nextGuidance))
+        } catch {
+          // ignore storage write failures
+        }
+      }
       if (refreshNews && newsResults) {
         setNewsBySymbol((current) => {
           const next: Record<string, CompanyNewsItem[]> = {}
@@ -255,25 +265,6 @@ export function Intelligence() {
     return () => clearInterval(interval)
   }, [symbolsKey])
 
-  useEffect(() => {
-    if (skipFirstProfileRefreshRef.current) {
-      skipFirstProfileRefreshRef.current = false
-      return
-    }
-    setGuidanceBySymbol((current) => {
-      const next: Record<string, StockGuidance> = {}
-      Object.entries(current).forEach(([symbol, guidance]) => {
-        next[symbol] = reprofileGuidance(guidance, profile)
-      })
-      return next
-    })
-  }, [profile])
-
-  useEffect(() => {
-    if (typeof window === 'undefined') return
-    window.localStorage.setItem(PROFILE_STORAGE_KEY, profile)
-  }, [profile])
-
   const actionMeta = {
     buy:  { label: 'Buy Bias',  className: 'badge-buy',       icon: <TrendingDown size={12} /> },
     hold: { label: 'Hold Bias', className: 'badge-triggered',  icon: <Minus size={12} /> },
@@ -298,39 +289,6 @@ export function Intelligence() {
             {isLoading ? 'Analysing...' : 'Refresh'}
           </button>
         </div>
-      </div>
-
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.45rem' }}>
-        {PROFILE_OPTIONS.map((option) => {
-          const active = option.value === profile
-          return (
-            <button
-              key={option.value}
-              type="button"
-              onClick={() => setProfile(option.value)}
-              style={{
-                border: active ? '1px solid rgba(99,102,241,0.55)' : '1px solid rgba(255,255,255,0.14)',
-                background: active ? 'rgba(99,102,241,0.16)' : 'rgba(255,255,255,0.04)',
-                color: 'inherit',
-                borderRadius: 999,
-                padding: '0.35rem 0.55rem',
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: '0.35rem',
-                fontSize: '0.74rem',
-                cursor: 'pointer',
-              }}
-              aria-pressed={active}
-            >
-              <span style={{ color: active ? 'rgba(129,140,248,0.95)' : 'rgba(255,255,255,0.55)' }}>
-                {PROFILE_ICON[option.value]}
-              </span>
-              <span style={{ fontWeight: active ? 700 : 600 }}>
-                {option.label}
-              </span>
-            </button>
-          )
-        })}
       </div>
 
       {newsNotice && (
@@ -359,15 +317,12 @@ export function Intelligence() {
           gap: '0.6rem',
         }}
       >
-        <span style={{ fontSize: '1.2rem' }}>
-          {PROFILE_ICON[profile]}
-        </span>
         <div style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
           <p style={{ margin: 0, fontSize: '0.85rem', fontWeight: 700 }} className="text-white-main">
-            {PROFILE_OPTIONS.find((p) => p.value === profile)?.label}
+            Recommendation model
           </p>
           <p style={{ margin: 0, fontSize: '0.78rem' }} className="text-muted-main">
-            {PROFILE_EXPLANATIONS[profile]}
+            Single default profile: momentum + sentiment + fundamentals for simple, consistent guidance.
           </p>
         </div>
       </div>

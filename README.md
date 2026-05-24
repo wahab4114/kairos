@@ -69,3 +69,7 @@ npm run preview  # Preview production build
 - Lightweight & fast first principle
 - German market focus (€EUR)
 - Web + Mobile responsive
+
+## Intelligence Docs
+
+- Signal formulas and plain-language examples: [src/components/Intelligence/README.md](src/components/Intelligence/README.md)

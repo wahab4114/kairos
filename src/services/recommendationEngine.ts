@@ -26,8 +26,6 @@ import {
 } from './priceService'
 import { scoreSentimentFromText } from './sentimentLexicon'
 
-export type RecommendationProfile = 'default' | 'aggressive' | 'balanced' | 'conservative'
-
 const SENTIMENT_CACHE_STORAGE_KEY = 'kairos-sentiment-cache-v1'
 
 type CachedSentimentEntry = {
@@ -41,7 +39,7 @@ type CachedSentimentEntry = {
 const sentimentCache = new Map<string, CachedSentimentEntry>()
 let hasHydratedSentimentCache = false
 
-interface ProfileConfig {
+interface RecommendationConfig {
   signalWeights: {
     momentum: number
     sentiment: number
@@ -58,54 +56,10 @@ interface ProfileConfig {
   }
 }
 
-export interface ProfileVisualConfig {
-  signalWeights: {
-    momentum: number
-    sentiment: number
-    fundamentals: number
-  }
-  sentimentHorizonWeights: {
-    short: number
-    mid: number
-    long: number
-  }
-  actionThresholds: {
-    buy: number
-    sell: number
-  }
-}
-
-const PROFILE_CONFIG: Record<RecommendationProfile, ProfileConfig> = {
-  default: {
-    // Combines all profiles: averaged signal balance and medium thresholds.
-    signalWeights: { momentum: 0.39, sentiment: 0.33, fundamentals: 0.28 },
-    sentimentHorizonWeights: { short: 0.48, mid: 0.30, long: 0.22 },
-    actionThresholds: { buy: 0.13, sell: -0.13 },
-  },
-  aggressive: {
-    signalWeights: { momentum: 0.50, sentiment: 0.35, fundamentals: 0.15 },
-    sentimentHorizonWeights: { short: 0.65, mid: 0.25, long: 0.10 },
-    actionThresholds: { buy: 0.08, sell: -0.08 },
-  },
-  balanced: {
-    signalWeights: { momentum: 0.40, sentiment: 0.35, fundamentals: 0.25 },
-    sentimentHorizonWeights: { short: 0.50, mid: 0.30, long: 0.20 },
-    actionThresholds: { buy: 0.12, sell: -0.12 },
-  },
-  conservative: {
-    signalWeights: { momentum: 0.28, sentiment: 0.30, fundamentals: 0.42 },
-    sentimentHorizonWeights: { short: 0.30, mid: 0.35, long: 0.35 },
-    actionThresholds: { buy: 0.18, sell: -0.18 },
-  },
-}
-
-export function getProfileVisualConfig(profile: RecommendationProfile): ProfileVisualConfig {
-  const config = PROFILE_CONFIG[profile]
-  return {
-    signalWeights: { ...config.signalWeights },
-    sentimentHorizonWeights: { ...config.sentimentHorizonWeights },
-    actionThresholds: { ...config.actionThresholds },
-  }
+const RECOMMENDATION_CONFIG: RecommendationConfig = {
+  signalWeights: { momentum: 0.39, sentiment: 0.33, fundamentals: 0.28 },
+  sentimentHorizonWeights: { short: 0.48, mid: 0.30, long: 0.22 },
+  actionThresholds: { buy: 0.13, sell: -0.13 },
 }
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
@@ -196,9 +150,8 @@ function cacheSentiment(symbol: string, entry: CachedSentimentEntry) {
 
 function scoreFromHorizons(
   horizons: { short: number; mid: number; long: number },
-  profile: RecommendationProfile,
 ): number {
-  const weights = PROFILE_CONFIG[profile].sentimentHorizonWeights
+  const weights = RECOMMENDATION_CONFIG.sentimentHorizonWeights
   return clamp(
     horizons.short * weights.short + horizons.mid * weights.mid + horizons.long * weights.long,
     -1,
@@ -284,12 +237,11 @@ function scoreNewsWindow(news: Array<{ headline: string; summary: string }>): nu
 
 async function computeSentimentSignal(
   symbol: string,
-  profile: RecommendationProfile,
   companyName?: string,
 ): Promise<SentimentSignal> {
   hydrateSentimentCache()
 
-  const profileConfig = PROFILE_CONFIG[profile]
+  const profileConfig = RECOMMENDATION_CONFIG
   const horizonWeights = profileConfig.sentimentHorizonWeights
 
   const [shortNews, midNews, longNews] = await Promise.all([
@@ -355,7 +307,6 @@ async function computeSentimentSignal(
     if (cached) {
       const cachedScore = scoreFromHorizons(
         { short: cached.short, mid: cached.mid, long: cached.long },
-        profile,
       )
       return {
         score: cachedScore,
@@ -514,78 +465,21 @@ function generateReasons(
   return reasons.slice(0, 4)  // max 4 reasons
 }
 
-export function reprofileGuidance(
-  guidance: StockGuidance,
-  profile: RecommendationProfile,
-): StockGuidance {
-  if (!guidance.signals) return guidance
-
-  const profileConfig = PROFILE_CONFIG[profile]
-  const signals: SignalBreakdown = {
-    ...guidance.signals,
-    sentiment: { ...guidance.signals.sentiment },
-  }
-
-  if (signals.sentiment.horizons) {
-    const { short, mid, long } = signals.sentiment.horizons
-    const weights = profileConfig.sentimentHorizonWeights
-    const reweightedSentiment = clamp(
-      short * weights.short + mid * weights.mid + long * weights.long,
-      -1,
-      1,
-    )
-    signals.sentiment.score = reweightedSentiment
-    signals.sentiment.label = signalLabel(reweightedSentiment)
-    signals.sentiment.detail = `${signalMeaning(reweightedSentiment, 'sentiment')}${formatEvidence([
-      `Today ${short >= 0 ? '+' : ''}${short.toFixed(2)}`,
-      `Past week ${mid >= 0 ? '+' : ''}${mid.toFixed(2)}`,
-      `Past month ${long >= 0 ? '+' : ''}${long.toFixed(2)}`,
-      `profile reweight=${profile}`,
-    ])}`
-  }
-
-  const composite = clamp(
-    signals.momentum.score * profileConfig.signalWeights.momentum +
-    signals.sentiment.score * profileConfig.signalWeights.sentiment +
-    signals.fundamentals.score * profileConfig.signalWeights.fundamentals,
-    -1,
-    1,
-  )
-
-  const action: 'buy' | 'hold' | 'sell' =
-    composite > profileConfig.actionThresholds.buy  ? 'buy'  :
-    composite < profileConfig.actionThresholds.sell ? 'sell' : 'hold'
-
-  const scores = [signals.momentum.score, signals.sentiment.score, signals.fundamentals.score]
-  const allSame = scores.every((s) => s > 0) || scores.every((s) => s < 0)
-  const baseConf = Math.round(50 + Math.abs(composite) * 38)
-  const confidence = clamp(allSame ? baseConf + 8 : baseConf, 42, 94)
-
-  return {
-    ...guidance,
-    action,
-    confidence,
-    reasons: generateReasons(action, signals, null),
-    signals,
-  }
-}
-
 // ─── Main export ──────────────────────────────────────────────────────────────
 
 export async function getEnrichedGuidance(
   symbol: string,
-  profile: RecommendationProfile = 'default',
   companyName?: string,
 ): Promise<StockGuidance | null> {
   const sym = symbol.trim().toUpperCase()
-  const profileConfig = PROFILE_CONFIG[profile]
+  const profileConfig = RECOMMENDATION_CONFIG
 
   // Fetch everything in parallel — individual failures return null/empty gracefully
   const [quote, closesResult, metricsResult, sentimentSignal] = await Promise.all([
     fetchQuote(sym),
     fetchClosingPricesWithProvider(sym, 90),
     fetchBasicMetricsWithProvider(sym),
-    computeSentimentSignal(sym, profile, companyName),
+    computeSentimentSignal(sym, companyName),
   ])
 
   if (!quote) return null
